@@ -1,0 +1,112 @@
+# OKStatus — Prometheus alerting rules for the OKStatus export
+# (GET /api/v1/metrics). https://okstatus.eu/docs/integrations/prometheus/
+#
+# Load with `rule_files:` in prometheus.yml, or wrap the `groups:` list in a
+# PrometheusRule for the Prometheus Operator. Thresholds are starting
+# points: tune `for:` and the day counts to your own on-call policy.
+groups:
+  - name: okstatus
+    rules:
+      - alert: OKStatusMonitorDown
+        # OKStatus already waits for the majority of the monitor's probe
+        # regions, each after its own retries: no need for a long `for`.
+        expr: okstatus_monitor_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.monitor_name }} is down"
+          description: "{{ $labels.monitor_name }} ({{ $labels.monitor_host }}) is down on the majority of its OKStatus probe regions."
+
+      - alert: OKStatusMonitorDegraded
+        expr: okstatus_monitor_status{state="degraded"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.monitor_name }} is degraded"
+          description: "At least one probe region fails, or responses are slow, for {{ $labels.monitor_name }} since 10 minutes."
+
+      - alert: OKStatusProbeRegionDown
+        expr: okstatus_region_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.monitor_name }} fails from {{ $labels.probe_region }}"
+          description: "The checks of {{ $labels.monitor_name }} from {{ $labels.probe_region }} fail for 15 minutes while the monitor is not down: a regional route, DNS or CDN issue."
+
+      - alert: OKStatusCertificateExpiresSoon
+        expr: (okstatus_certificate_expiry_timestamp_seconds - time()) < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate of {{ $labels.monitor_host }} expires in {{ $value | humanizeDuration }}"
+          description: "Renew the certificate served for {{ $labels.monitor_name }}."
+
+      - alert: OKStatusCertificateExpiresVerySoon
+        expr: (okstatus_certificate_expiry_timestamp_seconds - time()) < 3 * 86400
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "TLS certificate of {{ $labels.monitor_host }} expires in {{ $value | humanizeDuration }}"
+          description: "Renew the certificate served for {{ $labels.monitor_name }} now."
+
+      - alert: OKStatusDomainExpiresSoon
+        expr: (okstatus_domain_expiry_timestamp_seconds - time()) < 30 * 86400
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Domain {{ $labels.domain }} expires in {{ $value | humanizeDuration }}"
+          description: "Renew the registration of {{ $labels.domain }}."
+
+      - alert: OKStatusSlaTargetMissed
+        # Monitor target when set, organization target otherwise.
+        expr: |
+          okstatus_monitor_availability_ratio{window="30d"}
+            < on (monitor_id) group_left ()
+          (okstatus_monitor_sla_target_ratio
+            or on (monitor_id) (0 * okstatus_monitor_check_interval_seconds + scalar(okstatus_org_sla_target_ratio)))
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.monitor_name }} is below its SLA target over 30 days"
+          description: "30-day availability of {{ $labels.monitor_name }}: {{ $value | humanizePercentage }}."
+
+      - alert: OKStatusMonitorStale
+        # No check for three intervals while the monitor is not paused or in
+        # maintenance: the probe or the agent stopped.
+        expr: |
+          max by (monitor_id, monitor_name) (time() - okstatus_check_timestamp_seconds)
+            > on (monitor_id) group_left ()
+          (3 * okstatus_monitor_check_interval_seconds + 120)
+          unless on (monitor_id) (okstatus_monitor_status{state=~"paused|maintenance"} == 1)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No recent check for {{ $labels.monitor_name }}"
+          description: "The last check of {{ $labels.monitor_name }} is {{ $value | humanizeDuration }} old."
+
+      - alert: OKStatusPrivateAgentDown
+        expr: okstatus_private_agent_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Private agent {{ $labels.agent_name }} is offline"
+          description: "No heartbeat from {{ $labels.agent_name }}: the monitors it runs are not checked."
+
+      - alert: OKStatusExportUnreachable
+        # Set `job` to the job_name of your scrape config.
+        expr: up{job="okstatus"} == 0 or absent(okstatus_exporter_info)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The OKStatus export cannot be scraped"
+          description: "Prometheus gets no data from https://api.okstatus.eu/api/v1/metrics: check the key (revoked, expired, plan) and network egress."

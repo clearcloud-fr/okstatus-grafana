@@ -1,0 +1,58 @@
+# promtool test rules okstatus-alerts.test.yml
+rule_files:
+  - okstatus-alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'okstatus_monitor_up{monitor_id="a", monitor_name="API", monitor_host="api.example.com"}'
+        values: '1 1 0 0 0'
+      # b has its own 99.9 % target, c falls back on the org 99.5 %.
+      - series: 'okstatus_monitor_availability_ratio{monitor_id="b", monitor_name="Shop", window="30d"}'
+        values: '0.998x40'
+      - series: 'okstatus_monitor_sla_target_ratio{monitor_id="b", monitor_name="Shop"}'
+        values: '0.999x40'
+      - series: 'okstatus_monitor_availability_ratio{monitor_id="c", monitor_name="Blog", window="30d"}'
+        values: '0.998x40'
+      - series: 'okstatus_monitor_check_interval_seconds{monitor_id="b", monitor_name="Shop"}'
+        values: '60x40'
+      - series: 'okstatus_monitor_check_interval_seconds{monitor_id="c", monitor_name="Blog"}'
+        values: '60x40'
+      - series: 'okstatus_org_sla_target_ratio'
+        values: '0.995x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: OKStatusMonitorDown
+        exp_alerts:
+          - exp_labels: { severity: critical, monitor_id: a, monitor_name: API, monitor_host: api.example.com }
+            exp_annotations:
+              summary: "API is down"
+              description: "API (api.example.com) is down on the majority of its OKStatus probe regions."
+      - eval_time: 35m
+        alertname: OKStatusSlaTargetMissed
+        exp_alerts:
+          - exp_labels: { severity: warning, monitor_id: b, monitor_name: Shop, window: 30d }
+            exp_annotations:
+              summary: "Shop is below its SLA target over 30 days"
+              description: "30-day availability of Shop: 99.8%."
+
+  # A check that stopped arriving, and the same monitor once paused.
+  - interval: 1m
+    input_series:
+      - series: 'okstatus_check_timestamp_seconds{monitor_id="d", monitor_name="Cron", probe_region="fr-dc3"}'
+        values: '0x40'
+      - series: 'okstatus_monitor_check_interval_seconds{monitor_id="d", monitor_name="Cron"}'
+        values: '60x40'
+      - series: 'okstatus_monitor_status{monitor_id="d", monitor_name="Cron", state="paused"}'
+        values: '0x30 1x10'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: OKStatusMonitorStale
+        exp_alerts:
+          - exp_labels: { severity: warning, monitor_id: d, monitor_name: Cron }
+            exp_annotations:
+              summary: "No recent check for Cron"
+              description: "The last check of Cron is 25m 0s old."
+      - eval_time: 40m
+        alertname: OKStatusMonitorStale
+        exp_alerts: []

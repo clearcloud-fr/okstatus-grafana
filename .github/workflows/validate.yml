@@ -1,0 +1,37 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    name: Alerting rules (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check syntax
+        run: >-
+          docker run --rm -v "$PWD/alerts:/w" -w /w --entrypoint promtool
+          prom/prometheus:v3.5.0 check rules okstatus-alerts.yml
+      - name: Unit tests
+        run: >-
+          docker run --rm -v "$PWD/alerts:/w" -w /w --entrypoint promtool
+          prom/prometheus:v3.5.0 test rules okstatus-alerts.test.yml
+
+  dashboard:
+    name: Dashboard JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Valid JSON with a stable uid and a data source variable
+        run: |
+          jq -e '.uid == "okstatus-uptime-overview"' dashboards/okstatus-uptime-overview.json
+          jq -e '[.templating.list[] | select(.type == "datasource")] | length == 1' dashboards/okstatus-uptime-overview.json
+      - name: Probe region is never queried as `region`
+        run: |
+          ! grep -nE '[{,(] *region *[=!]~?|by \(region\)' dashboards/*.json alerts/*.yml
